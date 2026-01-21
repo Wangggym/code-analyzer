@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 
 from src.config import settings
 from src.services.sandbox.docker_sandbox import DockerSandbox, ExecutionResult
@@ -141,10 +142,13 @@ class TestRunner:
 Generate functional test code to verify these features work correctly.
 """
 
-        model = AnthropicModel(
-            model_name=settings.anthropic_model_id,
+        provider = AnthropicProvider(
             api_key=settings.anthropic_api_key,
             base_url=settings.anthropic_base_url,
+        )
+        model = AnthropicModel(
+            model_name=settings.anthropic_model_id,
+            provider=provider,
         )
 
         agent = Agent(
@@ -153,7 +157,7 @@ Generate functional test code to verify these features work correctly.
         )
 
         result = await agent.run(user_prompt)
-        test_code = result.data
+        test_code = result.output
 
         # Clean up code blocks if present
         if "```" in test_code:

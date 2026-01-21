@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from src.config import settings
 from src.config.exception_config import LLMAnalysisError
@@ -65,19 +67,25 @@ Important:
 
 def _create_primary_model() -> AnthropicModel:
     """Create the primary LLM model (Claude 4.5)"""
-    return AnthropicModel(
-        model_name=settings.anthropic_model_id,
+    provider = AnthropicProvider(
         api_key=settings.anthropic_api_key,
         base_url=settings.anthropic_base_url,
+    )
+    return AnthropicModel(
+        model_name=settings.anthropic_model_id,
+        provider=provider,
     )
 
 
 def _create_secondary_model() -> OpenAIModel:
     """Create the secondary LLM model (GPT-4o mini)"""
-    return OpenAIModel(
-        model_name=settings.openai_model_id,
+    provider = OpenAIProvider(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
+    )
+    return OpenAIModel(
+        model_name=settings.openai_model_id,
+        provider=provider,
     )
 
 
@@ -130,7 +138,7 @@ Please analyze the code and provide the feature location report in JSON format.
         )
 
         result = await agent.run(user_prompt)
-        raw_response = result.data
+        raw_response = result.output
 
         logger.info(f"LLM response length: {len(raw_response)} chars")
 
