@@ -18,43 +18,50 @@ logger = logging.getLogger(__name__)
 class StartupConfig:
     """Configuration for starting the project"""
 
-    start_method: str  # docker-compose, dockerfile, npm, python, unknown
-    start_command: str
-    stop_command: str
+    start_method: str  # npm, python, go, dockerfile, docker-compose, unknown
+    runtime: str  # Docker image: node:20, python:3.12, golang:1.21, etc.
+    install_command: str  # npm install, pip install -r requirements.txt
+    start_command: str  # npm start, python main.py
     health_check_url: str | None
     service_port: int
-    env_vars: dict[str, str]
     estimated_startup_time: int  # seconds
-    working_dir: str  # relative to project root
+    reason: str  # Why this method was chosen
 
 
-STARTUP_ANALYSIS_PROMPT = """You are a DevOps expert. Analyze the project configuration files and determine the best way to start this project for testing.
+STARTUP_ANALYSIS_PROMPT = """You are a DevOps expert. Analyze the project configuration files and determine the SIMPLEST and MOST RELIABLE way to start this project for testing.
 
-Given the project files, output a JSON with the startup configuration.
+IMPORTANT - Priority order (choose the FIRST one that works):
+1. **Native commands** (npm/python/go) - MOST RELIABLE
+   - Look at README.md for start instructions (e.g., "npm install && npm start")
+   - Check package.json scripts
+   - Check if code has sensible defaults (no mandatory env vars)
+   
+2. **Dockerfile** - If native won't work (complex dependencies)
 
-Important rules:
-1. Prefer docker-compose if available (most isolated)
-2. If only Dockerfile exists, use that
-3. If neither, use the native runtime (npm for Node.js, python for Python)
-4. Look at README for any special instructions
-5. Identify the health check endpoint if available (often /health, /api/health, or GraphQL playground)
-6. For GraphQL projects, the health check can be the GraphQL endpoint itself
+3. **docker-compose** - LAST RESORT, often complex
+   - Only if project REQUIRES multiple services (database, redis, etc.)
+   - docker-compose configs often have complex env_file requirements that fail
 
-Output ONLY valid JSON in this format:
+AVOID docker-compose if:
+- Project uses SQLite/in-memory DB by default
+- README shows simple npm/python start commands
+- docker-compose.yml has env_file dependencies
+
+Output ONLY valid JSON:
 {
-  "start_method": "docker-compose" | "dockerfile" | "npm" | "python" | "unknown",
-  "start_command": "the command to start the service",
-  "stop_command": "the command to stop/cleanup",
-  "health_check_url": "http://localhost:PORT/health or null if unknown",
+  "start_method": "npm" | "python" | "go" | "dockerfile" | "docker-compose" | "unknown",
+  "runtime": "node:20" | "python:3.12" | "golang:1.21" | "custom",
+  "install_command": "npm install",
+  "start_command": "npm run start",
+  "health_check_url": "http://localhost:3000/graphql",
   "service_port": 3000,
-  "env_vars": {"KEY": "VALUE"},
-  "estimated_startup_time": 30,
-  "working_dir": "." 
+  "estimated_startup_time": 90,
+  "reason": "README shows npm start, uses SQLite by default"
 }
 
 Examples:
-- docker-compose project: {"start_method": "docker-compose", "start_command": "docker-compose up -d", "stop_command": "docker-compose down -v", ...}
-- npm project: {"start_method": "npm", "start_command": "npm install && npm run start", "stop_command": "pkill -f node", ...}
+- Node.js with SQLite: {"start_method": "npm", "runtime": "node:20", "install_command": "npm install", "start_command": "npm run start", "health_check_url": "http://localhost:3000/graphql", "service_port": 3000, "estimated_startup_time": 90, "reason": "package.json has start script, uses SQLite default"}
+- Python FastAPI: {"start_method": "python", "runtime": "python:3.12", "install_command": "pip install -r requirements.txt", "start_command": "uvicorn main:app --host 0.0.0.0 --port 8000", "health_check_url": "http://localhost:8000/health", "service_port": 8000, "estimated_startup_time": 30, "reason": "README shows uvicorn command"}
 """
 
 
@@ -143,13 +150,13 @@ Output the startup configuration as JSON.
 
         return StartupConfig(
             start_method=data.get("start_method", "unknown"),
+            runtime=data.get("runtime", "node:20"),
+            install_command=data.get("install_command", ""),
             start_command=data.get("start_command", ""),
-            stop_command=data.get("stop_command", ""),
             health_check_url=data.get("health_check_url"),
             service_port=data.get("service_port", 3000),
-            env_vars=data.get("env_vars", {}),
-            estimated_startup_time=data.get("estimated_startup_time", 30),
-            working_dir=data.get("working_dir", "."),
+            estimated_startup_time=data.get("estimated_startup_time", 90),
+            reason=data.get("reason", ""),
         )
 
     except Exception as e:
@@ -161,11 +168,11 @@ def _default_config() -> StartupConfig:
     """Return default config when analysis fails"""
     return StartupConfig(
         start_method="unknown",
+        runtime="node:20",
+        install_command="",
         start_command="",
-        stop_command="",
         health_check_url=None,
         service_port=3000,
-        env_vars={},
-        estimated_startup_time=30,
-        working_dir=".",
+        estimated_startup_time=90,
+        reason="Analysis failed, using defaults",
     )

@@ -4,8 +4,8 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from typing import Callable
 
-import httpx
 from pydantic_ai import Agent
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -13,6 +13,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from src.config import settings
 from src.services.startup_analyzer import StartupConfig, analyze_startup_method
 from src.services.sandbox.project_runner import ProjectRunner, RunningProject
+from src.services.sse_helper import SSEEvent, Stages
 from src.schema.response import (
     FeatureAnalysis,
     FunctionalVerification,
@@ -20,6 +21,9 @@ from src.schema.response import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Type for progress callback
+ProgressCallback = Callable[[SSEEvent], None]
 
 
 @dataclass
@@ -45,45 +49,65 @@ Generate test code that:
 3. Is self-contained and runnable
 
 For GraphQL APIs (Node.js):
-- Use fetch or axios for HTTP requests
+- Use native fetch (available in Node.js 18+)
 - Test mutations and queries
 - Include proper async/await
+- Print clear test results
 
 For REST APIs:
 - Test CRUD operations
 - Verify response status and data
 
-Output ONLY the test code, no explanations. The code must be runnable with Node.js (using fetch).
+Output ONLY the test code, no explanations. The code must be runnable with Node.js 18+ (using native fetch).
 
 Example format for GraphQL:
 ```javascript
 const BASE_URL = 'http://localhost:3000/graphql';
 
-async function test() {
-  console.log('Testing: Create channel...');
-  const createRes = await fetch(BASE_URL, {
+async function graphql(query, variables = {}) {
+  const res = await fetch(BASE_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      query: `mutation { createChannel(createChannelInput: { name: "Test" }) { id name } }`
-    })
+    body: JSON.stringify({ query, variables })
   });
-  const createData = await createRes.json();
-  console.log('Result:', JSON.stringify(createData, null, 2));
-  
-  if (!createData.data?.createChannel?.id) {
-    throw new Error('Create channel failed');
-  }
-  console.log('✓ Create channel passed');
+  return res.json();
 }
 
-test().then(() => {
-  console.log('\\n✓ All tests passed!');
-  process.exit(0);
-}).catch(err => {
-  console.error('\\n✗ Test failed:', err.message);
-  process.exit(1);
-});
+async function runTests() {
+  console.log('=== Starting Functional Tests ===\\n');
+  
+  // Test 1: Create Channel
+  console.log('Test 1: Create Channel');
+  const createRes = await graphql(`
+    mutation { createChannel(createChannelInput: { name: "Test Channel" }) { id name } }
+  `);
+  if (!createRes.data?.createChannel?.id) {
+    throw new Error('Create channel failed: ' + JSON.stringify(createRes));
+  }
+  const channelId = createRes.data.createChannel.id;
+  console.log('✓ Created channel with id:', channelId);
+  
+  // Test 2: Create Message
+  console.log('\\nTest 2: Create Message');
+  const msgRes = await graphql(`
+    mutation { createMessage(createMessageInput: { channelId: ${channelId}, title: "Test", content: "Hello" }) { id title content } }
+  `);
+  if (!msgRes.data?.createMessage?.id) {
+    throw new Error('Create message failed: ' + JSON.stringify(msgRes));
+  }
+  console.log('✓ Created message');
+}
+
+runTests()
+  .then(() => {
+    console.log('\\n=== All Tests Passed ===');
+    process.exit(0);
+  })
+  .catch(err => {
+    console.error('\\n=== Test Failed ===');
+    console.error(err.message);
+    process.exit(1);
+  });
 ```
 """
 
@@ -94,7 +118,7 @@ class TestRunner:
 
     Flow:
     1. Analyze startup method (LLM)
-    2. Start project in isolation
+    2. Start project in Docker
     3. Generate test code (LLM)
     4. Execute tests
     5. Collect results
@@ -109,6 +133,7 @@ class TestRunner:
         problem_description: str,
         feature_analysis: list[FeatureAnalysis],
         project_dir: str,
+        on_progress: ProgressCallback | None = None,
     ) -> FunctionalVerification:
         """
         Run complete functional verification.
@@ -117,6 +142,7 @@ class TestRunner:
             problem_description: Original feature requirements
             feature_analysis: List of analyzed features
             project_dir: Path to project directory
+            on_progress: Optional callback for progress updates
 
         Returns:
             FunctionalVerification with test code and results
@@ -126,32 +152,52 @@ class TestRunner:
         """
         project: RunningProject | None = None
 
+        def emit(stage: str, message: str) -> None:
+            """Helper to emit progress"""
+            if on_progress:
+                on_progress(SSEEvent(stage=stage, message=message))
+            logger.info(f"[{stage}] {message}")
+
         try:
             # Step 1: Analyze startup method
-            logger.info("Step 1: Analyzing startup method...")
+            emit(Stages.ANALYZING_STARTUP, "Analyzing how to start the project...")
             startup_config = await analyze_startup_method(project_dir)
-            logger.info(f"Startup config: {startup_config.start_method}")
+            emit(
+                Stages.ANALYZING_STARTUP,
+                f"Using {startup_config.start_method} with {startup_config.runtime}: {startup_config.reason}",
+            )
 
             if startup_config.start_method == "unknown":
                 raise RuntimeError("Could not determine how to start the project")
 
             # Step 2: Start project
-            logger.info("Step 2: Starting project...")
+            emit(Stages.STARTING_PROJECT, "Starting project in Docker sandbox...")
             project = await self.project_runner.start_project(project_dir, startup_config)
 
+            emit(Stages.WAITING_HEALTH, "Waiting for service to be ready...")
+            # Health check is done inside start_project
+            emit(Stages.WAITING_HEALTH, f"Service is running on port {startup_config.service_port}")
+
             # Step 3: Generate test code
-            logger.info("Step 3: Generating test code...")
+            emit(Stages.GENERATING_TESTS, "Generating test code with AI...")
             test_result = await self._generate_tests(
                 problem_description=problem_description,
                 feature_analysis=feature_analysis,
                 startup_config=startup_config,
             )
+            emit(Stages.GENERATING_TESTS, f"Generated {len(test_result.test_code)} bytes of test code")
 
             # Step 4: Execute tests
-            logger.info("Step 4: Executing tests...")
+            emit(Stages.RUNNING_TESTS, "Executing tests...")
             execution_result = await self._execute_tests(
                 test_code=test_result.test_code,
                 startup_config=startup_config,
+            )
+
+            passed = execution_result["passed"]
+            emit(
+                Stages.RUNNING_TESTS,
+                f"Tests {'passed' if passed else 'failed'}",
             )
 
             return FunctionalVerification(
@@ -165,8 +211,9 @@ class TestRunner:
         finally:
             # Step 5: Cleanup
             if project:
-                logger.info("Step 5: Cleaning up...")
+                emit(Stages.CLEANUP, "Stopping project and cleaning up...")
                 await self.project_runner.stop_project(project)
+                emit(Stages.CLEANUP, "Cleanup complete")
 
     async def _generate_tests(
         self,
@@ -200,6 +247,7 @@ GraphQL Endpoint: http://localhost:{startup_config.service_port}/graphql
 
 Generate functional test code to verify these features work correctly.
 The tests should make real HTTP requests to the running service.
+Use native fetch (Node.js 18+), no external dependencies.
 """
 
         provider = AnthropicProvider(
@@ -233,7 +281,7 @@ The tests should make real HTTP requests to the running service.
         return TestGenerationResult(
             test_code=test_code,
             language="javascript",
-            framework="node-fetch",
+            framework="native-fetch",
         )
 
     async def _execute_tests(
@@ -252,7 +300,8 @@ The tests should make real HTTP requests to the running service.
             test_file = f.name
 
         try:
-            # Run with Node.js
+            # Run with Node.js (using host's Node.js for simplicity)
+            # Tests connect to localhost which is the host machine
             proc = await asyncio.create_subprocess_exec(
                 "node",
                 test_file,
