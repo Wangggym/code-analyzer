@@ -28,14 +28,19 @@ cd code-analyzer
 cp .env.example .env
 # Edit .env with your API keys
 
-# 3. Build and run
-docker build -t code-analyzer .
-docker run -d \
-  --name code-analyzer \
-  -p 3006:3006 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  --env-file .env \
-  code-analyzer
+# 3. Build and run (recommended: use docker compose)
+docker compose up -d --build
+
+# Or manually with docker run (for functional verification, need extra mounts):
+# docker build -t code-analyzer .
+# docker run -d \
+#   --name code-analyzer \
+#   -p 3006:3006 \
+#   -v /var/run/docker.sock:/var/run/docker.sock \
+#   -v $(pwd)/tmp:/tmp/code-analyzer \
+#   -e HOST_UPLOAD_DIR=$(pwd)/tmp \
+#   --env-file .env \
+#   code-analyzer
 
 # 4. Verify it's running
 curl http://localhost:3006/health
