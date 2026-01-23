@@ -54,7 +54,20 @@ class Settings(BaseModel):
 
     # Upload Configuration
     upload_dir: str = get_env("UPLOAD_DIR", "/tmp/code-analyzer")
+    # HOST_UPLOAD_DIR: the host path that maps to upload_dir (for Docker-in-Docker)
+    # If not set, assumes running directly on host and uses upload_dir
+    host_upload_dir: str = get_env("HOST_UPLOAD_DIR", "")
     max_upload_size: int = get_env_int("MAX_UPLOAD_SIZE", "104857600")  # 100MB
+
+    def get_host_path(self, container_path: str) -> str:
+        """Convert container path to host path for Docker volume mounts"""
+        if not self.host_upload_dir:
+            # Running directly on host, no conversion needed
+            return container_path
+        # Replace container upload_dir with host_upload_dir
+        if container_path.startswith(self.upload_dir):
+            return container_path.replace(self.upload_dir, self.host_upload_dir, 1)
+        return container_path
 
     def print_config(self) -> None:
         """Print configuration (masking sensitive values)"""
@@ -69,6 +82,8 @@ class Settings(BaseModel):
             if key in config_dict and config_dict[key]:
                 config_dict[key] = config_dict[key][:8] + "***"
 
+        # Add host_upload_dir explicitly since it might be missing from dump
+        config_dict["host_upload_dir"] = self.host_upload_dir
         logger.info(f"Configuration: {config_dict}")
 
 

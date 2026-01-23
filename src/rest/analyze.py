@@ -60,8 +60,10 @@ async def analyze_code_endpoint(
 
     # For verification, we need a persistent directory (not auto-deleted)
     # because Docker needs the files to exist during container runtime
+    # Use settings.upload_dir as base for Docker volume compatibility
     if run_verification:
-        temp_dir = tempfile.mkdtemp(prefix="code-analyzer-")
+        os.makedirs(settings.upload_dir, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(prefix="session-", dir=settings.upload_dir)
         try:
             return await _analyze_with_verification(
                 problem_description=problem_description,
@@ -76,7 +78,8 @@ async def analyze_code_endpoint(
                 logger.warning(f"Failed to cleanup temp dir: {e}")
     else:
         # Simple analysis without verification
-        with tempfile.TemporaryDirectory(prefix="code-analyzer-") as temp_dir:
+        os.makedirs(settings.upload_dir, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="session-", dir=settings.upload_dir) as temp_dir:
             return await _analyze_simple(
                 problem_description=problem_description,
                 content=content,
@@ -119,7 +122,9 @@ async def analyze_code_stream(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate SSE events"""
-        temp_dir = tempfile.mkdtemp(prefix="code-analyzer-")
+        # Use settings.upload_dir as base for Docker volume compatibility
+        os.makedirs(settings.upload_dir, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(prefix="session-", dir=settings.upload_dir)
         event_queue: asyncio.Queue[SSEEvent] = asyncio.Queue()
 
         def send_event(event: SSEEvent) -> None:

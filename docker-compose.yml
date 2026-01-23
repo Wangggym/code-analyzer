@@ -20,6 +20,8 @@ services:
       - SANDBOX_TIMEOUT=${SANDBOX_TIMEOUT:-300}
       - SANDBOX_MEMORY_LIMIT=${SANDBOX_MEMORY_LIMIT:-512m}
       - SANDBOX_CPU_LIMIT=${SANDBOX_CPU_LIMIT:-1.0}
+      # For Docker-in-Docker: map container path to host path
+      - HOST_UPLOAD_DIR=${HOST_UPLOAD_DIR:-${PWD}/tmp}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./tmp:/tmp/code-analyzer

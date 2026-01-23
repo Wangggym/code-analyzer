@@ -7,12 +7,13 @@ from dataclasses import dataclass
 
 import httpx
 
+from src.config import settings
 from src.services.startup_analyzer import StartupConfig
 
 logger = logging.getLogger(__name__)
 
-# Timeout for startup (seconds) - npm install can take 90s+
-STARTUP_TIMEOUT = 180
+# Timeout for startup (seconds) - npm install can take 90s+ (especially in China)
+STARTUP_TIMEOUT = 300
 
 
 @dataclass
@@ -70,9 +71,17 @@ class ProjectRunner:
         )
 
         try:
-            # Build the startup command
+            # Build the startup command with Chinese npm mirror for faster downloads
+            npm_registry = "https://registry.npmmirror.com"
+            
             if config.install_command and config.start_command:
-                cmd = f"{config.install_command} && {config.start_command}"
+                install_cmd = config.install_command
+                # Add npm registry for npm/yarn/pnpm commands
+                if "npm install" in install_cmd:
+                    install_cmd = install_cmd.replace(
+                        "npm install", f"npm install --registry={npm_registry}"
+                    )
+                cmd = f"{install_cmd} && {config.start_command}"
             elif config.start_command:
                 cmd = config.start_command
             else:
@@ -80,12 +89,15 @@ class ProjectRunner:
 
             port = config.service_port
 
+            # Convert container path to host path for Docker volume mount
+            host_project_dir = settings.get_host_path(project_dir)
+
             # Run in Docker container
             docker_cmd = (
                 f"docker run -d "
                 f"--name {container_name} "
                 f"-p {port}:{port} "
-                f"-v {project_dir}:/app "
+                f"-v {host_project_dir}:/app "
                 f"-w /app "
                 f"{config.runtime} "
                 f'sh -c "{cmd}"'
@@ -93,8 +105,8 @@ class ProjectRunner:
 
             logger.info(f"Docker command: {docker_cmd}")
 
-            # Start container
-            stdout, stderr = await self._run_command(docker_cmd, timeout=60)
+            # Start container (longer timeout for image pulling)
+            stdout, stderr = await self._run_command(docker_cmd, timeout=180)
             container_id = stdout.strip()
 
             if not container_id:
@@ -151,6 +163,14 @@ class ProjectRunner:
         """Wait for project to be healthy"""
         config = project.config
         health_url = config.health_check_url
+
+        # When running in Docker, use host.docker.internal instead of localhost
+        # to access ports exposed on the Docker host
+        logger.info(f"host_upload_dir={repr(settings.host_upload_dir)}, original_url={health_url}")
+        if health_url and settings.host_upload_dir:
+            health_url = health_url.replace("localhost", "host.docker.internal")
+            health_url = health_url.replace("127.0.0.1", "host.docker.internal")
+            logger.info(f"Converted health_url to: {health_url}")
 
         if not health_url:
             # No health check URL, just wait estimated time

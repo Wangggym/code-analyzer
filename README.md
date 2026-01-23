@@ -44,20 +44,25 @@ curl http://localhost:3006/health
 ### Test the API
 
 ```bash
-# Prepare test data
-zip -r test-project.zip your-project-folder/
-
-# Basic analysis (fast, no verification)
+# Basic analysis (fast, no verification) - using included example
 curl -X POST http://localhost:3006/analyze \
-  -F "problem_description=Describe the features to locate..." \
-  -F "code_zip=@test-project.zip" \
+  -F "problem_description=分析 NestJS Channel Messenger 的消息发送流程，包括 GraphQL mutation 入口、业务逻辑处理、数据验证和持久化" \
+  -F "code_zip=@example.zip" \
   -F "run_verification=false"
 
 # Full analysis with functional verification (SSE streaming)
+# Note: This may take 2-3 minutes (npm install + project startup + test execution)
 curl -X POST http://localhost:3006/analyze/stream \
-  -F "problem_description=Describe the features to locate..." \
-  -F "code_zip=@test-project.zip" \
+  -F "problem_description=分析 NestJS Channel Messenger 的消息发送流程，包括 GraphQL mutation 入口、业务逻辑处理、数据验证和持久化" \
+  -F "code_zip=@example.zip" \
   --no-buffer
+
+# Or use your own project
+zip -r my-project.zip your-project-folder/
+curl -X POST http://localhost:3006/analyze \
+  -F "problem_description=Describe the features to locate..." \
+  -F "code_zip=@my-project.zip" \
+  -F "run_verification=false"
 ```
 
 ## API Endpoints

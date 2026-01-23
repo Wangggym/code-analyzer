@@ -192,6 +192,7 @@ class TestRunner:
             execution_result = await self._execute_tests(
                 test_code=test_result.test_code,
                 startup_config=startup_config,
+                container_name=project.container_name,
             )
 
             passed = execution_result["passed"]
@@ -288,23 +289,48 @@ Use native fetch (Node.js 18+), no external dependencies.
         self,
         test_code: str,
         startup_config: StartupConfig,
+        container_name: str,
     ) -> dict:
-        """Execute test code and return results"""
-        # Create temp file for test
+        """Execute test code inside the sandbox container"""
         import tempfile
+        import uuid
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".mjs", delete=False
-        ) as f:
-            f.write(test_code)
-            test_file = f.name
+        # Create temp file for test
+        test_filename = f"test_{uuid.uuid4().hex[:8]}.mjs"
+        local_test_file = None
 
         try:
-            # Run with Node.js (using host's Node.js for simplicity)
-            # Tests connect to localhost which is the host machine
-            proc = await asyncio.create_subprocess_exec(
-                "node",
-                test_file,
+            # Write test code to a temp file
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".mjs", delete=False
+            ) as f:
+                f.write(test_code)
+                local_test_file = f.name
+
+            # Copy test file to the container
+            container_test_path = f"/tmp/{test_filename}"
+            copy_cmd = f"docker cp {local_test_file} {container_name}:{container_test_path}"
+
+            proc = await asyncio.create_subprocess_shell(
+                copy_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await proc.communicate()
+
+            if proc.returncode != 0:
+                return {
+                    "passed": False,
+                    "log": f"Failed to copy test file to container",
+                }
+
+            # Execute test inside the container
+            # Use localhost since we're inside the container now
+            exec_cmd = f"docker exec {container_name} node {container_test_path}"
+            logger.info(f"Executing tests: {exec_cmd}")
+
+            proc = await asyncio.create_subprocess_shell(
+                exec_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -335,8 +361,20 @@ Use native fetch (Node.js 18+), no external dependencies.
                 }
 
         finally:
-            # Cleanup temp file
+            # Cleanup local temp file
+            if local_test_file:
+                try:
+                    os.unlink(local_test_file)
+                except Exception:
+                    pass
+            # Cleanup container test file
             try:
-                os.unlink(test_file)
+                cleanup_cmd = f"docker exec {container_name} rm -f {container_test_path}"
+                proc = await asyncio.create_subprocess_shell(
+                    cleanup_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc.communicate()
             except Exception:
                 pass
